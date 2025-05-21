@@ -324,22 +324,22 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00110000, true).await?;
-        Timer::after_millis(4200).await;
-
-        self.lcd_write(0b00110000, true).await?;
         Timer::after_millis(150).await;
-
         self.lcd_write(0b00110000, true).await?;
-        Timer::after_millis(37).await;
 
+        Timer::after_millis(50).await;
+        self.lcd_write(0b00110000, true).await?;
+
+        Timer::after_millis(37).await;
+        self.lcd_write(0b00110000, true).await?;
+
+        Timer::after_millis(37).await;
         self.lcd_write(0b00100000, true).await?; // Function Set - 4 bits mode
-        Timer::after_millis(37).await;
 
+        Timer::after_millis(37).await;
         self.lcd_write(0b00101000, false).await?; // Function Set - 4 bits(Still), 2 lines, 5x8 font
-        Timer::after_millis(37).await;
 
-        self.display().await?;
+        self.no_display().await?;
         self.clear().await?;
         self.left_to_right().await?;
 
@@ -368,13 +368,12 @@ where
         if !initialization {
             Timer::after_millis(37).await;
             // We need a delay between half byte writes
-            // We rely on I2C transaction taking enough time
 
             // Send low nibble
             self.output.e = 1;
             self.i2c_write(self.output.get_low_data())?;
             // High part of enable should be >450 nS
-            // We rely on I2C transaction taking more than 450ns
+            Timer::after_millis(1).await;
 
             self.output.e = 0;
             self.i2c_write(self.output.get_low_data())?;

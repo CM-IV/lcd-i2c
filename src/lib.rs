@@ -73,7 +73,8 @@ where
 
         self.display_state |= 1 << 2;
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -83,7 +84,7 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00000001, false)?;
+        self.lcd_write(0b00000001, false).await?;
         Timer::after_millis(1600).await;
 
         Ok(())
@@ -93,7 +94,7 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00000010, false)?;
+        self.lcd_write(0b00000010, false).await?;
         Timer::after_millis(1600).await;
 
         Ok(())
@@ -105,7 +106,7 @@ where
 
         self.entry_state |= 1 << 1;
 
-        self.lcd_write(0b00000100 | self.entry_state, false)?;
+        self.lcd_write(0b00000100 | self.entry_state, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -118,7 +119,7 @@ where
 
         self.entry_state &= !(1 << 1);
 
-        self.lcd_write(0b00000100 | self.entry_state, false)?;
+        self.lcd_write(0b00000100 | self.entry_state, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -143,7 +144,7 @@ where
 
         self.entry_state |= 1;
 
-        self.lcd_write(0b00000100 | self.entry_state, false)?;
+        self.lcd_write(0b00000100 | self.entry_state, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -156,7 +157,7 @@ where
 
         self.entry_state &= !1;
 
-        self.lcd_write(0b00000100 | self.entry_state, false)?;
+        self.lcd_write(0b00000100 | self.entry_state, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -168,7 +169,8 @@ where
 
         self.display_state &= !(1 << 2);
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -181,7 +183,8 @@ where
 
         self.display_state |= 1 << 1;
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -194,7 +197,8 @@ where
 
         self.display_state &= !(1 << 1);
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -207,7 +211,8 @@ where
 
         self.display_state |= 1;
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -220,7 +225,8 @@ where
 
         self.display_state &= !1;
 
-        self.lcd_write(0b00001000 | self.display_state, false)?;
+        self.lcd_write(0b00001000 | self.display_state, false)
+            .await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -231,7 +237,7 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00011000, false)?;
+        self.lcd_write(0b00011000, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -242,7 +248,7 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00011100, false)?;
+        self.lcd_write(0b00011100, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -252,7 +258,7 @@ where
         self.output.rs = 1;
         self.output.rw = 0;
 
-        self.lcd_write(byte, false)?;
+        self.lcd_write(byte, false).await?;
         Timer::after_millis(41).await;
 
         Ok(())
@@ -273,7 +279,7 @@ where
 
         let location = location % 8;
 
-        self.lcd_write(0b01000000 | (location << 3), false)?;
+        self.lcd_write(0b01000000 | (location << 3), false).await?;
         Timer::after_millis(37).await;
 
         for &byte in charmap.iter() {
@@ -292,7 +298,7 @@ where
 
         let new_address = if row == 0 { 0x00 } else { 0x40 } + col;
 
-        self.lcd_write(0b10000000 | new_address, false)?;
+        self.lcd_write(0b10000000 | new_address, false).await?;
         Timer::after_millis(37).await;
 
         Ok(())
@@ -318,19 +324,19 @@ where
         self.output.rs = 0;
         self.output.rw = 0;
 
-        self.lcd_write(0b00110000, true)?;
+        self.lcd_write(0b00110000, true).await?;
         Timer::after_millis(4200).await;
 
-        self.lcd_write(0b00110000, true)?;
+        self.lcd_write(0b00110000, true).await?;
         Timer::after_millis(150).await;
 
-        self.lcd_write(0b00110000, true)?;
+        self.lcd_write(0b00110000, true).await?;
         Timer::after_millis(37).await;
 
-        self.lcd_write(0b00100000, true)?; // Function Set - 4 bits mode
+        self.lcd_write(0b00100000, true).await?; // Function Set - 4 bits mode
         Timer::after_millis(37).await;
 
-        self.lcd_write(0b00101000, false)?; // Function Set - 4 bits(Still), 2 lines, 5x8 font
+        self.lcd_write(0b00101000, false).await?; // Function Set - 4 bits(Still), 2 lines, 5x8 font
         Timer::after_millis(37).await;
 
         self.display().await?;
@@ -344,12 +350,14 @@ where
         self.i2c.write(self.address, &[0x01, output])
     }
 
-    fn lcd_write(&mut self, output: u8, initialization: bool) -> Result<(), E> {
+    async fn lcd_write(&mut self, output: u8, initialization: bool) -> Result<(), E> {
         self.output.data = output;
 
         // Send high nibble
         self.output.e = 1;
         self.i2c_write(self.output.get_high_data())?;
+
+        Timer::after_millis(1).await;
         // High part of enable should be >450 nS
         // We rely on I2C transaction taking more than 450ns
 
@@ -358,6 +366,7 @@ where
 
         // During initialization we only send half a byte
         if !initialization {
+            Timer::after_millis(37).await;
             // We need a delay between half byte writes
             // We rely on I2C transaction taking enough time
 

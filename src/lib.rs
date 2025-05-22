@@ -5,6 +5,11 @@ use core::fmt;
 use embassy_time::Timer;
 use embedded_hal::i2c::I2c;
 
+const INIT_DELAY_1: u64 = 15;
+const INIT_DELAY_2: u64 = 5;
+const INIT_DELAY_3: u64 = 1;
+const CMD_DELAY: u64 = 1;
+
 pub struct OutputState {
     rs: u8,
     rw: u8,
@@ -320,34 +325,52 @@ where
     }
 
     async fn initialize_lcd(&mut self) -> Result<(), E> {
-        // See HD44780U datasheet "Initializing by Instruction" Figure 24 (4-Bit Interface)
         self.output.rs = 0;
         self.output.rw = 0;
 
-        Timer::after_millis(150).await;
-        self.lcd_write(0b00110000, true).await?;
+        // Initialization sequence (Figure 24)
+        Timer::after_millis(INIT_DELAY_1).await;
+        self.i2c_write_raw(0x30)?; // 8-bit mode
 
-        Timer::after_millis(50).await;
-        self.lcd_write(0b00110000, true).await?;
+        Timer::after_millis(INIT_DELAY_2).await;
+        self.i2c_write_raw(0x30)?; // 8-bit mode
 
-        Timer::after_millis(37).await;
-        self.lcd_write(0b00110000, true).await?;
+        Timer::after_millis(INIT_DELAY_3).await;
+        self.i2c_write_raw(0x30)?; // 8-bit mode
 
-        Timer::after_millis(37).await;
-        self.lcd_write(0b00100000, true).await?; // Function Set - 4 bits mode
+        // Switch to 4-bit mode
+        self.i2c_write_raw(0x20)?;
+        Timer::after_millis(CMD_DELAY).await;
 
-        Timer::after_millis(37).await;
-        self.lcd_write(0b00101000, false).await?; // Function Set - 4 bits(Still), 2 lines, 5x8 font
+        // Function set: 4-bit, 2 lines, 5x8 font
+        self.lcd_write(0b00101000, false).await?;
+        Timer::after_millis(CMD_DELAY).await;
 
-        self.no_display().await?;
-        self.clear().await?;
-        self.left_to_right().await?;
+        // Display off
+        self.lcd_write(0b00001000, false).await?;
+        Timer::after_millis(CMD_DELAY).await;
+
+        // Clear display
+        self.lcd_write(0b00000001, false).await?;
+        Timer::after_millis(2).await; // Clear needs ~1.52ms
+
+        // Entry mode set
+        self.lcd_write(0b00000110, false).await?;
+        Timer::after_millis(CMD_DELAY).await;
+
+        // Display on
+        self.lcd_write(0b00001100, false).await?;
+        Timer::after_millis(CMD_DELAY).await;
 
         Ok(())
     }
 
     fn i2c_write(&mut self, output: u8) -> Result<(), E> {
         self.i2c.write(self.address, &[0x01, output])
+    }
+
+    fn i2c_write_raw(&mut self, value: u8) -> Result<(), E> {
+        self.i2c.write(self.address, &[value >> 4 | 0x04, 0x00])
     }
 
     async fn lcd_write(&mut self, output: u8, initialization: bool) -> Result<(), E> {

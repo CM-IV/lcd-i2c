@@ -5,50 +5,16 @@ use core::fmt;
 use embassy_time::Timer;
 use embedded_hal::i2c::I2c;
 
-// LCD commands
-const LCD_CLEARDISPLAY: u8 = 0x01;
-const LCD_RETURNHOME: u8 = 0x02;
-const LCD_ENTRYMODESET: u8 = 0x04;
-const LCD_DISPLAYCONTROL: u8 = 0x08;
-const LCD_CURSORSHIFT: u8 = 0x10;
-const LCD_FUNCTIONSET: u8 = 0x20;
-const LCD_SETCGRAMADDR: u8 = 0x40;
-const LCD_SETDDRAMADDR: u8 = 0x80;
-
-// Flags for display entry mode
-const LCD_ENTRYLEFT: u8 = 0x02;
-const LCD_ENTRYSHIFTINCREMENT: u8 = 0x01;
-const LCD_ENTRYSHIFTDECREMENT: u8 = 0x00;
-
-// Flags for display on/off control
-const LCD_DISPLAYON: u8 = 0x04;
-const LCD_CURSORON: u8 = 0x02;
-const LCD_CURSOROFF: u8 = 0x00;
-const LCD_BLINKON: u8 = 0x01;
-const LCD_BLINKOFF: u8 = 0x00;
-
-// Flags for display/cursor shift
-const LCD_DISPLAYMOVE: u8 = 0x08;
-const LCD_MOVERIGHT: u8 = 0x04;
-const LCD_MOVELEFT: u8 = 0x00;
-
-// Flags for function set
-const LCD_4BITMODE: u8 = 0x00;
-const LCD_2LINE: u8 = 0x08;
-const LCD_5X8_DOTS: u8 = 0x00;
-
-// Pin definitions for LCD backpack
-const RS_PIN: u8 = 0; // Register Select
-const RW_PIN: u8 = 1; // Read/Write
-const EN_PIN: u8 = 2; // Enable
-const BL_PIN: u8 = 3; // Backlight
-// Data pins are 4-7
+// TCA9534 registers
+const TCA9534_REG_OUTPUT: u8 = 0x01;
+const TCA9534_REG_POLARITY: u8 = 0x02;
+const TCA9534_REG_CONFIG: u8 = 0x03;
 
 pub struct OutputState {
     rs: bool,
     rw: bool,
-    en: bool,
-    backlight: bool,
+    e: bool,
+    led: bool,
     data: u8,
 }
 
@@ -57,32 +23,52 @@ impl OutputState {
         Self {
             rs: false,
             rw: false,
-            en: false,
-            backlight: true,
+            e: false,
+            led: false,
             data: 0,
         }
     }
 
-    fn get_value(&self) -> u8 {
-        let mut value = 0;
+    fn get_high_data(&self) -> u8 {
+        let mut buffer = 0;
 
         if self.rs {
-            value |= 1 << RS_PIN;
+            buffer |= 0x01;
         }
         if self.rw {
-            value |= 1 << RW_PIN;
+            buffer |= 0x02;
         }
-        if self.en {
-            value |= 1 << EN_PIN;
+        if self.e {
+            buffer |= 0x04;
         }
-        if self.backlight {
-            value |= 1 << BL_PIN;
+        if self.led {
+            buffer |= 0x08;
         }
 
-        // Data pins are the high 4 bits
-        value |= self.data & 0xF0;
+        buffer |= self.data & 0xF0;
 
-        value
+        buffer
+    }
+
+    fn get_low_data(&self) -> u8 {
+        let mut buffer = 0;
+
+        if self.rs {
+            buffer |= 0x01;
+        }
+        if self.rw {
+            buffer |= 0x02;
+        }
+        if self.e {
+            buffer |= 0x04;
+        }
+        if self.led {
+            buffer |= 0x08;
+        }
+
+        buffer |= (self.data & 0x0F) << 4;
+
+        buffer
     }
 }
 
@@ -90,10 +76,8 @@ pub struct LcdI2c<I2C> {
     i2c: I2C,
     address: u8,
     output: OutputState,
-    display_control: u8,
-    display_function: u8,
-    display_mode: u8,
-    rows: u8,
+    display_state: u8,
+    entry_state: u8,
 }
 
 impl<I2C, E> LcdI2c<I2C>
@@ -105,221 +89,311 @@ where
             i2c,
             address,
             output: OutputState::new(),
-            display_control: 0,
-            display_function: 0,
-            display_mode: 0,
-            rows: 2,
+            display_state: 0x00,
+            entry_state: 0x00,
         }
     }
 
     pub async fn begin(&mut self) -> Result<(), E> {
-        // Wait for more than 15ms after VCC rises to 4.5V (datasheet)
+        // Initialize TCA9534 I/O expander
+        self.i2c.write(self.address, &[TCA9534_REG_CONFIG, 0x00])?;
+        Timer::after_millis(10).await;
+
+        // Set polarity to normal
+        self.i2c
+            .write(self.address, &[TCA9534_REG_POLARITY, 0x00])?;
+        Timer::after_millis(10).await;
+
+        // Set all outputs low
+        self.i2c.write(self.address, &[TCA9534_REG_OUTPUT, 0x00])?;
+        Timer::after_millis(10).await;
+
+        self.initialize_lcd().await?;
+
+        Ok(())
+    }
+
+    async fn initialize_lcd(&mut self) -> Result<(), E> {
+        // See HD44780U datasheet "Initializing by Instruction" Figure 24 (4-Bit Interface)
+        self.output.rs = false;
+        self.output.rw = false;
+
         Timer::after_millis(50).await;
 
-        self.output.backlight = true;
-        self.write_pins()?;
-
-        // Start in 8-bit mode, try to set 4-bit mode
-
-        self.write4bits(0x03).await?;
+        self.lcd_write(0x30, true).await?;
         Timer::after_millis(5).await;
 
-        self.write4bits(0x03).await?;
-        Timer::after_millis(5).await;
+        self.lcd_write(0x30, true).await?;
+        Timer::after_micros(150).await;
 
-        self.write4bits(0x03).await?;
-        Timer::after_millis(1).await;
+        self.lcd_write(0x30, true).await?;
+        Timer::after_micros(37).await;
 
-        // Finally, set to 4-bit interface
-        self.write4bits(0x02).await?;
-        Timer::after_millis(1).await;
+        // Set to 4-bit mode
+        self.lcd_write(0x20, true).await?;
+        Timer::after_micros(37).await;
 
-        // Set # lines, font size, etc.
-        self.display_function = LCD_4BITMODE | LCD_2LINE | LCD_5X8_DOTS;
-        self.command(LCD_FUNCTIONSET | self.display_function)
-            .await?;
+        // Function set: 4-bit mode, 2 lines, 5x8 font
+        self.lcd_write(0x28, false).await?;
+        Timer::after_micros(37).await;
 
-        // Turn the display on with no cursor or blinking default
-        self.display_control = LCD_DISPLAYON | LCD_CURSOROFF | LCD_BLINKOFF;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await?;
+        self.display().await?;
 
-        // Clear display
         self.clear().await?;
 
-        // Initialize to default text direction (for languages that read left to right)
-        self.display_mode = LCD_ENTRYLEFT | LCD_ENTRYSHIFTDECREMENT;
-        self.command(LCD_ENTRYMODESET | self.display_mode).await?;
+        self.left_to_right().await?;
 
         Ok(())
     }
 
     pub async fn clear(&mut self) -> Result<(), E> {
-        self.command(LCD_CLEARDISPLAY).await?;
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.lcd_write(0x01, false).await?;
         Timer::after_millis(2).await;
+
         Ok(())
     }
 
     pub async fn home(&mut self) -> Result<(), E> {
-        self.command(LCD_RETURNHOME).await?;
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.lcd_write(0x02, false).await?;
         Timer::after_millis(2).await;
+
+        Ok(())
+    }
+
+    pub async fn display(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state |= 1 << 2;
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn no_display(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state &= !(1 << 2);
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn cursor(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state |= 1 << 1;
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn no_cursor(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state &= !(1 << 1);
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn blink(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state |= 1;
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn no_blink(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.display_state &= !1;
+
+        self.lcd_write(0x08 | self.display_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn left_to_right(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.entry_state |= 1 << 1;
+
+        self.lcd_write(0x04 | self.entry_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn right_to_left(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.entry_state &= !(1 << 1);
+
+        self.lcd_write(0x04 | self.entry_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn autoscroll(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.entry_state |= 1;
+
+        self.lcd_write(0x04 | self.entry_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn no_autoscroll(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.entry_state &= !1;
+
+        self.lcd_write(0x04 | self.entry_state, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn scroll_display_left(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.lcd_write(0x18, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub async fn scroll_display_right(&mut self) -> Result<(), E> {
+        self.output.rs = false;
+        self.output.rw = false;
+
+        self.lcd_write(0x1C, false).await?;
+        Timer::after_micros(37).await;
+
+        Ok(())
+    }
+
+    pub fn backlight(&mut self) -> Result<(), E> {
+        self.output.led = true;
+        self.i2c_write(0x00 | (self.output.led as u8) << 3)?;
+        Ok(())
+    }
+
+    pub fn no_backlight(&mut self) -> Result<(), E> {
+        self.output.led = false;
+        self.i2c_write(0x00 | (self.output.led as u8) << 3)?;
         Ok(())
     }
 
     pub async fn set_cursor(&mut self, col: u8, row: u8) -> Result<(), E> {
-        let row_offsets: [u8; 4] = [0x00, 0x40, 0x14, 0x54];
-        let row_idx = if row >= self.rows { self.rows - 1 } else { row };
+        self.output.rs = false;
+        self.output.rw = false;
 
-        self.command(LCD_SETDDRAMADDR | (col + row_offsets[row_idx as usize]))
-            .await
-    }
+        let new_address = if row == 0 { 0x00 } else { 0x40 } + col;
 
-    pub async fn no_display(&mut self) -> Result<(), E> {
-        self.display_control &= !LCD_DISPLAYON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
+        self.lcd_write(0x80 | new_address, false).await?;
+        Timer::after_micros(37).await;
 
-    pub async fn display(&mut self) -> Result<(), E> {
-        self.display_control |= LCD_DISPLAYON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
-
-    pub async fn no_cursor(&mut self) -> Result<(), E> {
-        self.display_control &= !LCD_CURSORON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
-
-    pub async fn cursor(&mut self) -> Result<(), E> {
-        self.display_control |= LCD_CURSORON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
-
-    pub async fn no_blink(&mut self) -> Result<(), E> {
-        self.display_control &= !LCD_BLINKON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
-
-    pub async fn blink(&mut self) -> Result<(), E> {
-        self.display_control |= LCD_BLINKON;
-        self.command(LCD_DISPLAYCONTROL | self.display_control)
-            .await
-    }
-
-    pub async fn scroll_display_left(&mut self) -> Result<(), E> {
-        self.command(LCD_CURSORSHIFT | LCD_DISPLAYMOVE | LCD_MOVELEFT)
-            .await
-    }
-
-    pub async fn scroll_display_right(&mut self) -> Result<(), E> {
-        self.command(LCD_CURSORSHIFT | LCD_DISPLAYMOVE | LCD_MOVERIGHT)
-            .await
-    }
-
-    pub async fn left_to_right(&mut self) -> Result<(), E> {
-        self.display_mode |= LCD_ENTRYLEFT;
-        self.command(LCD_ENTRYMODESET | self.display_mode).await
-    }
-
-    pub async fn right_to_left(&mut self) -> Result<(), E> {
-        self.display_mode &= !LCD_ENTRYLEFT;
-        self.command(LCD_ENTRYMODESET | self.display_mode).await
-    }
-
-    pub async fn autoscroll(&mut self) -> Result<(), E> {
-        self.display_mode |= LCD_ENTRYSHIFTINCREMENT;
-        self.command(LCD_ENTRYMODESET | self.display_mode).await
-    }
-
-    pub async fn no_autoscroll(&mut self) -> Result<(), E> {
-        self.display_mode &= !LCD_ENTRYSHIFTINCREMENT;
-        self.command(LCD_ENTRYMODESET | self.display_mode).await
-    }
-
-    pub fn backlight(&mut self) -> Result<(), E> {
-        self.output.backlight = true;
-        self.write_pins()
-    }
-
-    pub fn no_backlight(&mut self) -> Result<(), E> {
-        self.output.backlight = false;
-        self.write_pins()
+        Ok(())
     }
 
     pub async fn create_char(&mut self, location: u8, charmap: &[u8; 8]) -> Result<(), E> {
-        let location = location & 0x7; // We only have 8 CGRAM locations (0-7)
-        self.command(LCD_SETCGRAMADDR | (location << 3)).await?;
+        self.output.rs = false;
+        self.output.rw = false;
 
-        for &b in charmap {
-            self.write(b).await?;
+        let location = location % 8;
+
+        self.lcd_write(0x40 | (location << 3), false).await?;
+        Timer::after_micros(37).await;
+
+        for &byte in charmap.iter() {
+            self.write_byte(byte).await?;
         }
 
+        // Set the address pointer back to the DDRAM
+        self.set_cursor(0, 0).await?;
         Ok(())
     }
 
     pub async fn write_byte(&mut self, byte: u8) -> Result<(), E> {
-        self.write(byte).await
+        self.output.rs = true;
+        self.output.rw = false;
+
+        self.lcd_write(byte, false).await?;
+        Timer::after_micros(41).await;
+
+        Ok(())
     }
 
     pub async fn write_str(&mut self, s: &str) -> Result<(), E> {
-        for b in s.bytes() {
-            self.write(b).await?;
+        for byte in s.bytes() {
+            self.write_byte(byte).await?;
         }
         Ok(())
     }
 
-    async fn command(&mut self, value: u8) -> Result<(), E> {
-        self.output.rs = false;
-        self.send(value).await
-    }
+    async fn lcd_write(&mut self, output: u8, initialization: bool) -> Result<(), E> {
+        self.output.data = output;
 
-    async fn write(&mut self, value: u8) -> Result<(), E> {
-        self.output.rs = true;
-        self.send(value).await
-    }
-
-    async fn send(&mut self, value: u8) -> Result<(), E> {
         // Send high nibble
-        self.write4bits(value >> 4).await?;
-        // Send low nibble
-        self.write4bits(value & 0x0F).await?;
-
-        Timer::after_micros(100).await;
-
-        Ok(())
-    }
-
-    async fn write4bits(&mut self, value: u8) -> Result<(), E> {
-        self.output.data = value << 4; // Move to high nibble position (bits 4-7)
-
-        self.pulse_enable().await?;
-
-        Ok(())
-    }
-
-    async fn pulse_enable(&mut self) -> Result<(), E> {
-        self.output.en = false;
-        self.write_pins()?;
+        self.output.e = true;
+        self.i2c_write(self.output.get_high_data())?;
         Timer::after_micros(1).await;
 
-        self.output.en = true;
-        self.write_pins()?;
-        Timer::after_micros(1).await;
+        self.output.e = false;
+        self.i2c_write(self.output.get_high_data())?;
 
-        self.output.en = false;
-        self.write_pins()?;
-        Timer::after_micros(100).await;
+        // During initialization we only send half a byte
+        if !initialization {
+            Timer::after_micros(37).await;
+
+            // Send low nibble
+            self.output.e = true;
+            self.i2c_write(self.output.get_low_data())?;
+            Timer::after_micros(1).await;
+
+            self.output.e = false;
+            self.i2c_write(self.output.get_low_data())?;
+        }
 
         Ok(())
     }
 
-    fn write_pins(&mut self) -> Result<(), E> {
-        let value = self.output.get_value();
-        self.i2c.write(self.address, &[value])
+    fn i2c_write(&mut self, output: u8) -> Result<(), E> {
+        self.i2c.write(self.address, &[TCA9534_REG_OUTPUT, output])
     }
 }
 
@@ -328,40 +402,30 @@ where
     I2C: I2c<Error = E>,
 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for b in s.bytes() {
+        for byte in s.bytes() {
             self.output.rs = true;
+            self.output.rw = false;
+            self.output.data = byte;
 
-            // Send high nibble
-            self.output.data = b & 0xF0;
-            self.output.en = false;
-            if self.write_pins().is_err() {
+            // High nibble
+            self.output.e = true;
+            if self.i2c_write(self.output.get_high_data()).is_err() {
                 return Err(fmt::Error);
             }
 
-            self.output.en = true;
-            if self.write_pins().is_err() {
+            self.output.e = false;
+            if self.i2c_write(self.output.get_high_data()).is_err() {
                 return Err(fmt::Error);
             }
 
-            self.output.en = false;
-            if self.write_pins().is_err() {
+            // Low nibble
+            self.output.e = true;
+            if self.i2c_write(self.output.get_low_data()).is_err() {
                 return Err(fmt::Error);
             }
 
-            // Send low nibble
-            self.output.data = (b & 0x0F) << 4;
-            self.output.en = false;
-            if self.write_pins().is_err() {
-                return Err(fmt::Error);
-            }
-
-            self.output.en = true;
-            if self.write_pins().is_err() {
-                return Err(fmt::Error);
-            }
-
-            self.output.en = false;
-            if self.write_pins().is_err() {
+            self.output.e = false;
+            if self.i2c_write(self.output.get_low_data()).is_err() {
                 return Err(fmt::Error);
             }
         }

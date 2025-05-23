@@ -37,55 +37,52 @@ const LCD_4BITMODE: u8 = 0x00;
 const LCD_2LINE: u8 = 0x08;
 const LCD_5X8_DOTS: u8 = 0x00;
 
-// PCF8574 bit positions
-const RS_BIT: u8 = 0;
-const RW_BIT: u8 = 1;
-const E_BIT: u8 = 2;
-const LED_BIT: u8 = 3;
-// Data bits are 4-7
+// Pin definitions for LCD backpack
+const RS_PIN: u8 = 0; // Register Select
+const RW_PIN: u8 = 1; // Read/Write
+const EN_PIN: u8 = 2; // Enable
+const BL_PIN: u8 = 3; // Backlight
+// Data pins are 4-7
 
 pub struct OutputState {
-    rs: u8,
-    rw: u8,
-    e: u8,
-    led: u8,
+    rs: bool,
+    rw: bool,
+    en: bool,
+    backlight: bool,
     data: u8,
 }
 
 impl OutputState {
     fn new() -> Self {
         Self {
-            rs: 0,
-            rw: 0,
-            e: 0,
-            led: 1, // Default backlight on
+            rs: false,
+            rw: false,
+            en: false,
+            backlight: true,
             data: 0,
         }
     }
 
-    fn get_byte(&self) -> u8 {
-        (self.rs << RS_BIT) |
-        (self.rw << RW_BIT) |
-        (self.e << E_BIT) |
-        (self.led << LED_BIT) |
-        (self.data & 0xF0) >> 4 | // High nibble of data goes to bits 4-7
-        (self.data & 0x0F) << 4 // Low nibble of data goes to bits 0-3
-    }
+    fn get_value(&self) -> u8 {
+        let mut value = 0;
 
-    fn get_high_nibble(&self) -> u8 {
-        (self.rs << RS_BIT)
-            | (self.rw << RW_BIT)
-            | (self.e << E_BIT)
-            | (self.led << LED_BIT)
-            | ((self.data >> 4) & 0x0F) << 4 // High nibble of data to bits 4-7
-    }
+        if self.rs {
+            value |= 1 << RS_PIN;
+        }
+        if self.rw {
+            value |= 1 << RW_PIN;
+        }
+        if self.en {
+            value |= 1 << EN_PIN;
+        }
+        if self.backlight {
+            value |= 1 << BL_PIN;
+        }
 
-    fn get_low_nibble(&self) -> u8 {
-        (self.rs << RS_BIT)
-            | (self.rw << RW_BIT)
-            | (self.e << E_BIT)
-            | (self.led << LED_BIT)
-            | (self.data & 0x0F) << 4 // Low nibble of data to bits 4-7
+        // Data pins are the high 4 bits
+        value |= self.data & 0xF0;
+
+        value
     }
 }
 
@@ -119,14 +116,11 @@ where
         // Wait for more than 15ms after VCC rises to 4.5V (datasheet)
         Timer::after_millis(50).await;
 
-        // Set initial backlight state
-        self.output.led = 1;
-        self.i2c_write(self.output.get_byte())?;
-
-        // Initialize in 4-bit mode according to datasheet
-        // First, put the LCD into 4 bit mode
+        self.output.backlight = true;
+        self.write_pins()?;
 
         // Start in 8-bit mode, try to set 4-bit mode
+
         self.write4bits(0x03).await?;
         Timer::after_millis(5).await;
 
@@ -140,13 +134,15 @@ where
         self.write4bits(0x02).await?;
         Timer::after_millis(1).await;
 
+        // Set # lines, font size, etc.
         self.display_function = LCD_4BITMODE | LCD_2LINE | LCD_5X8_DOTS;
         self.command(LCD_FUNCTIONSET | self.display_function)
             .await?;
 
         // Turn the display on with no cursor or blinking default
         self.display_control = LCD_DISPLAYON | LCD_CURSOROFF | LCD_BLINKOFF;
-        self.display().await?;
+        self.command(LCD_DISPLAYCONTROL | self.display_control)
+            .await?;
 
         // Clear display
         self.clear().await?;
@@ -160,13 +156,13 @@ where
 
     pub async fn clear(&mut self) -> Result<(), E> {
         self.command(LCD_CLEARDISPLAY).await?;
-        Timer::after_millis(2).await; // This command takes a long time
+        Timer::after_millis(2).await;
         Ok(())
     }
 
     pub async fn home(&mut self) -> Result<(), E> {
         self.command(LCD_RETURNHOME).await?;
-        Timer::after_millis(2).await; // This command takes a long time
+        Timer::after_millis(2).await;
         Ok(())
     }
 
@@ -245,13 +241,13 @@ where
     }
 
     pub fn backlight(&mut self) -> Result<(), E> {
-        self.output.led = 1;
-        self.i2c_write(self.output.get_byte())
+        self.output.backlight = true;
+        self.write_pins()
     }
 
     pub fn no_backlight(&mut self) -> Result<(), E> {
-        self.output.led = 0;
-        self.i2c_write(self.output.get_byte())
+        self.output.backlight = false;
+        self.write_pins()
     }
 
     pub async fn create_char(&mut self, location: u8, charmap: &[u8; 8]) -> Result<(), E> {
@@ -277,56 +273,53 @@ where
     }
 
     async fn command(&mut self, value: u8) -> Result<(), E> {
-        self.output.rs = 0;
+        self.output.rs = false;
         self.send(value).await
     }
 
     async fn write(&mut self, value: u8) -> Result<(), E> {
-        self.output.rs = 1;
+        self.output.rs = true;
         self.send(value).await
     }
 
     async fn send(&mut self, value: u8) -> Result<(), E> {
-        self.output.data = value;
+        // Send high nibble
+        self.write4bits(value >> 4).await?;
+        // Send low nibble
+        self.write4bits(value & 0x0F).await?;
 
-        // High nibble
-        self.output.e = 1;
-        self.i2c_write(self.output.get_high_nibble())?;
-        Timer::after_micros(1).await;
-
-        self.output.e = 0;
-        self.i2c_write(self.output.get_high_nibble())?;
-        Timer::after_micros(100).await;
-
-        // Low nibble
-        self.output.e = 1;
-        self.i2c_write(self.output.get_low_nibble())?;
-        Timer::after_micros(1).await;
-
-        self.output.e = 0;
-        self.i2c_write(self.output.get_low_nibble())?;
         Timer::after_micros(100).await;
 
         Ok(())
     }
 
     async fn write4bits(&mut self, value: u8) -> Result<(), E> {
-        self.output.data = value << 4; // Move to high nibble
+        self.output.data = value << 4; // Move to high nibble position (bits 4-7)
 
-        // High nibble only
-        self.output.e = 1;
-        self.i2c_write(self.output.get_high_nibble())?;
+        self.pulse_enable().await?;
+
+        Ok(())
+    }
+
+    async fn pulse_enable(&mut self) -> Result<(), E> {
+        self.output.en = false;
+        self.write_pins()?;
         Timer::after_micros(1).await;
 
-        self.output.e = 0;
-        self.i2c_write(self.output.get_high_nibble())?;
+        self.output.en = true;
+        self.write_pins()?;
+        Timer::after_micros(1).await;
+
+        self.output.en = false;
+        self.write_pins()?;
         Timer::after_micros(100).await;
 
         Ok(())
     }
 
-    fn i2c_write(&mut self, data: u8) -> Result<(), E> {
-        self.i2c.write(self.address, &[data])
+    fn write_pins(&mut self) -> Result<(), E> {
+        let value = self.output.get_value();
+        self.i2c.write(self.address, &[value])
     }
 }
 
@@ -336,28 +329,39 @@ where
 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for b in s.bytes() {
-            self.output.rs = 1;
-            self.output.data = b;
+            self.output.rs = true;
 
-            // High nibble
-            self.output.e = 1;
-            if self.i2c_write(self.output.get_high_nibble()).is_err() {
+            // Send high nibble
+            self.output.data = b & 0xF0;
+            self.output.en = false;
+            if self.write_pins().is_err() {
                 return Err(fmt::Error);
             }
 
-            self.output.e = 0;
-            if self.i2c_write(self.output.get_high_nibble()).is_err() {
+            self.output.en = true;
+            if self.write_pins().is_err() {
                 return Err(fmt::Error);
             }
 
-            // Low nibble
-            self.output.e = 1;
-            if self.i2c_write(self.output.get_low_nibble()).is_err() {
+            self.output.en = false;
+            if self.write_pins().is_err() {
                 return Err(fmt::Error);
             }
 
-            self.output.e = 0;
-            if self.i2c_write(self.output.get_low_nibble()).is_err() {
+            // Send low nibble
+            self.output.data = (b & 0x0F) << 4;
+            self.output.en = false;
+            if self.write_pins().is_err() {
+                return Err(fmt::Error);
+            }
+
+            self.output.en = true;
+            if self.write_pins().is_err() {
+                return Err(fmt::Error);
+            }
+
+            self.output.en = false;
+            if self.write_pins().is_err() {
                 return Err(fmt::Error);
             }
         }
